@@ -47,7 +47,7 @@ A simplified Stripe/PayPal-style **wallet and money-movement backend** where aut
 | Correctness | Optimistic locking, unique constraints, same-TX ledger + balance |
 | Idempotency | Postgres authoritative; Redis fast path |
 | Async | Transactional **outbox** → Kafka → consumers; retries + DLQ |
-| Infra | Docker Compose (Postgres, Redis, Kafka, app), Testcontainers, Swagger, Postman |
+| Infra | Host-local **PostgreSQL 18**, Redis, and Kafka as each milestone needs them; Spring Boot on the host; Swagger, Postman. Docker Compose is **not** used for V1 (machine RAM); keep config Docker-compatible for later. |
 | Currency | **INR** only; `amountPaise` |
 
 ### V2+ (later — do not block V1)
@@ -159,7 +159,7 @@ A single polymorphic `Payment` with a `type` enum is schema-simpler but **langua
 
 ### V1 features (priority order)
 
-1. **Health + OpenAPI** — Prove the app boots in Compose.
+1. **Health + OpenAPI** — Prove the app boots on the host against local PostgreSQL 18.
 2. **Auth** — Register / login / refresh / logout.
 3. **Account** — Create wallet, get my account.
 4. **Ledger primitives** — Post balanced journal + update balances in one TX; unit tests for invariants.
@@ -547,7 +547,7 @@ No `transfers.*` topics in V1. No separate `payments.completed` topic unless a c
 | 3 | Marks `PUBLISHED` (+ `published_at`); claim/update carefully to limit double publish |
 | 4 | Consumer handles idempotently by `paymentTransactionId` |
 
-**Why not Debezium in V1:** Extra moving parts. App-polled outbox is enough for interviews and Compose demos.
+**Why not Debezium in V1:** Extra moving parts. App-polled outbox is enough for interviews and a local demo.
 
 ### Retry / DLQ
 
@@ -589,7 +589,7 @@ JSON with roughly: `paymentTransactionId`, `type` (`DEPOSIT`|`WITHDRAWAL`), `occ
 - Authorize account access (user can only touch own accounts / transfers / payments).
 - No real PANs; simulated gateway references only.
 - Do not log secrets, raw refresh tokens, or passwords.
-- HTTPS termination assumed at reverse proxy in real deploys; local HTTP in Compose OK.
+- HTTPS termination assumed at reverse proxy in real deploys; local HTTP on the host is OK.
 
 ### Why JWT over sessions
 
@@ -632,9 +632,11 @@ API / mobile-friendly; standard interview topic. Sessions would couple you to st
 - Idempotency service: first write, replay, body mismatch.
 - Gateway adapter mapping of success / fail / timeout.
 
-### Integration (Testcontainers)
+### Integration (local PostgreSQL 18; Redis/Kafka when that milestone is in play)
 
-- PostgreSQL: transfer concurrent debit cannot overspend.
+Testcontainers is **not** used in V1 because it requires Docker. Hit the same locally installed services the app uses.
+
+- PostgreSQL 18: transfer concurrent debit cannot overspend.
 - Same TX invariant: ledger sum matches balance delta.
 - Outbox: row created with PaymentTransaction; publisher sends; consumer completes deposit.
 - Redis down: idempotency still correct via Postgres.
@@ -657,8 +659,6 @@ API / mobile-friendly; standard interview topic. Sessions would couple you to st
 ```
 payment-processing-system/
 ├── pom.xml
-├── Dockerfile
-├── docker-compose.yml
 ├── README.md
 ├── PROJECT_PLAN.md
 ├── postman/
@@ -677,11 +677,12 @@ payment-processing-system/
     │   │   └── common/
     │   └── resources/
     │       ├── application.yml
-    │       ├── application-docker.yml
     │       └── db/migration/   # Flyway recommended
     └── test/
-        └── java/...            # unit + Testcontainers
+        └── java/...            # unit + integration against local services
 ```
+
+Optional later (not required for V1): `Dockerfile`, `docker-compose.yml`, `application-docker.yml` — same env-var connection style so Compose can wrap the host setup without domain-code changes.
 
 ### Maven stack (meaningful)
 
@@ -691,33 +692,36 @@ payment-processing-system/
 - Spring for Apache Kafka
 - JJWT or `spring-security-oauth2-jose` for JWT
 - springdoc-openapi
-- Testcontainers (Postgres, Redis, Kafka)
 - JUnit 5, Mockito, AssertJ
+- Integration tests against host-local PostgreSQL 18 (Redis/Kafka when those milestones need them)
 
 ---
 
-## 17. Docker / infrastructure
+## 17. Local infrastructure (no Docker in V1)
 
-### Compose services
+V1 runs **on the host**. Docker Compose is out of V1 because this machine does not have enough RAM for Docker Desktop. Connection details stay in env vars / `application.yml` so Compose can be added later without rewriting domain code.
 
-| Service | Image / notes |
+### Services (install locally; introduce when the milestone needs them)
+
+| Service | Version / notes |
 | --- | --- |
-| `postgres` | PostgreSQL 16 |
-| `redis` | Redis 7 |
-| `kafka` | Apache Kafka in **KRaft** mode (prefer no ZooKeeper) |
-| `app` | Built Spring Boot image; depends_on healthy deps |
+| PostgreSQL | **18** — required from M0 (Flyway + health). Default DB/user `paymentsystem` on `localhost:5432`. |
+| Redis | When M3/M6 need the fast path, denylist, or rate limits — not for M0. |
+| Kafka | **KRaft** (no ZooKeeper) when M4 needs outbox publish — not for M0. |
+| App | `java -jar` / Maven Spring Boot plugin on the host; JDBC to local PostgreSQL 18. |
 
 ### Config
 
-- Env-based URLs/credentials; sample `.env.example` (no secrets committed).
-- App profile `docker` for Compose.
+- Env-based URLs/credentials (`POSTGRES_HOST`, `POSTGRES_PORT`, `POSTGRES_DB`, `POSTGRES_USER`, `POSTGRES_PASSWORD`); sample `.env.example` (no secrets committed).
 - Kafka topics auto-create OK for V1; document required topic names in README.
 
 ### Local demo path
 
-1. `docker compose up --build`
-2. Open Swagger UI
-3. Run Postman: register → deposit (async) → transfer → ledger
+1. Ensure PostgreSQL 18 is running with database `paymentsystem`.
+2. Start Redis / Kafka only when that milestone needs them.
+3. Start the Spring Boot app on the host.
+4. Open Swagger UI
+5. Run Postman: register → deposit (async) → transfer → ledger
 
 ---
 
@@ -725,7 +729,7 @@ payment-processing-system/
 
 | Milestone | Deliverable | Exit criteria |
 | --- | --- | --- |
-| **M0** | Repo skeleton, Compose, health, OpenAPI | App healthy in Compose |
+| **M0** | Repo skeleton, health, OpenAPI | App boots on the host; `/actuator/health` shows DB UP against PostgreSQL 18 |
 | **M1** | Identity + JWT | Register/login/refresh/logout works |
 | **M2** | Account + ledger core | Unit tests: balanced journal + same-TX balance |
 | **M3** | Transfer + Postgres idempotency (Redis optional fast path) | Concurrent transfer test; Redis-down still checks Postgres |
@@ -753,7 +757,7 @@ Be ready to teach these from *your* code:
 9. **Money as integers** (paise) and INR-only V1 scope  
 10. **Modular monolith** as a stepping stone to services  
 11. **JWT** access/refresh, logout denylist  
-12. **Testcontainers** for realistic integration tests  
+12. **Integration tests** against local PostgreSQL 18 (and Redis/Kafka when in use)  
 
 For each, prepare: problem → options → your choice → tradeoff.
 
@@ -771,7 +775,7 @@ Built a Java 21 / Spring Boot payment wallet backend with double-entry ledgering
 - Separated **Transfer** (internal P2P) from **PaymentTransaction** (simulated gateway deposit/withdraw) to keep domain language precise.
 - Implemented **idempotent** money APIs with PostgreSQL as system of record and Redis as a fast-path cache.
 - Eliminated Kafka dual-writes using a **transactional outbox**, with idempotent consumers, retries, and DLQ handling.
-- Hardened concurrency with **optimistic locking** and integration tests (Testcontainers: Postgres, Redis, Kafka).
+- Hardened concurrency with **optimistic locking** and integration tests against local PostgreSQL 18 (Redis/Kafka when those flows exist).
 - Secured APIs with **Spring Security + JWT** (access/refresh, logout denylist) and documented them with OpenAPI + Postman.
 
 ### How to talk about scope honesty
@@ -785,13 +789,13 @@ Built a Java 21 / Spring Boot payment wallet backend with double-entry ledgering
 ### Architecture (final)
 
 - **Modular monolith** on Java 21 + Spring Boot + Maven  
-- **PostgreSQL**: accounts, ledger (SoT), transfers, payment_transactions, idempotency_records, outbox_events  
+- **PostgreSQL 18** (host-local in V1): accounts, ledger (SoT), transfers, payment_transactions, idempotency_records, outbox_events  
 - **Redis**: idempotency fast path, JWT denylist, rate limits  
 - **Kafka**: simple `payments.process` + `payments.dlq` via **outbox publisher only** (no CQRS command/event sprawl; transfers stay sync)  
 - **Concurrency**: optimistic locking only (`@Version`); no `SELECT FOR UPDATE` in V1  
 - **Idempotency**: Postgres always consulted; Redis optional fast path — Redis failure never skips Postgres  
 - **Simulated gateway** for deposits and withdrawals  
-- **Spring Security + JWT**; OpenAPI; Docker Compose; JUnit 5 + Mockito + Testcontainers  
+- **Spring Security + JWT**; OpenAPI; host-local run (no Docker in V1); JUnit 5 + Mockito + local integration tests  
 
 ### Money model (final)
 
@@ -813,7 +817,7 @@ Built a Java 21 / Spring Boot payment wallet backend with double-entry ledgering
 - [x] Postgres-authoritative idempotency + Redis fast path  
 - [x] Mandatory transactional outbox  
 - [x] Retries + DLQ  
-- [x] Compose + tests + OpenAPI + Postman  
+- [x] Host-local PostgreSQL 18 + tests + OpenAPI + Postman  
 
 ### Out of V1
 
@@ -826,6 +830,7 @@ Multi-currency, real PSPs, microservices, merchant platform, disputes, heavy obs
 1. **Optimistic locking only** — no `SELECT FOR UPDATE` in V1.
 2. **Idempotency on Redis failure** — skip Redis and go to Postgres; never process money without a Postgres idempotency check.
 3. **Simple Kafka model** — outbox → `payments.process` (+ `payments.dlq`); transfers stay synchronous; no command/event CQRS sprawl.
+4. **No Docker in V1** — Spring Boot and **PostgreSQL 18** run on the host; Redis/Kafka are local installs when a milestone needs them. Keep env-based config so Docker Compose can wrap this later.
 
 ---
 
