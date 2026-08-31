@@ -58,3 +58,8 @@ app:
     issuer: payment-processing-system
   refresh-token:
     ttl: ${REFRESH_TOKEN_TTL:P7D}
+  # M3: client idempotency + P2P transfer settings.
+  idempotency:
+    redis-ttl: ${IDEMPOTENCY_REDIS_TTL:P1D}
+  transfer:
+    max-optimistic-lock-attempts: ${TRANSFER_MAX_LOCK_ATTEMPTS:3}

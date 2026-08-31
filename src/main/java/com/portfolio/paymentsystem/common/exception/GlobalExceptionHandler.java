@@ -1,15 +1,18 @@
 package com.portfolio.paymentsystem.common.exception;
 
-import java.net.URI;
 import java.util.List;
 import java.util.Map;
 
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ProblemDetail;
+import org.springframework.http.ResponseEntity;
 import org.springframework.orm.ObjectOptimisticLockingFailureException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
+import org.springframework.web.bind.MissingRequestHeaderException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
+
+import com.portfolio.paymentsystem.common.idempotency.exception.IdempotentReplayException;
 
 /**
  * Central RFC 7807 (Problem Details) error mapping.
@@ -22,14 +25,35 @@ import org.springframework.web.bind.annotation.RestControllerAdvice;
 @RestControllerAdvice
 public class GlobalExceptionHandler {
 
-    private static final URI PROBLEM_TYPE_BASE = URI.create("https://payment-processing-system.local/problems/");
-
     @ExceptionHandler(ApiException.class)
     public ProblemDetail handleApiException(ApiException ex) {
-        ProblemDetail problem = ProblemDetail.forStatusAndDetail(ex.getStatus(), ex.getMessage());
-        problem.setTitle(ex.getStatus().getReasonPhrase());
-        problem.setType(PROBLEM_TYPE_BASE.resolve(ex.getErrorCode()));
-        problem.setProperty("code", ex.getErrorCode());
+        return ProblemDetailFactory.from(ex);
+    }
+
+    /**
+     * Not a fresh error — {@link IdempotentReplayException} carries a
+     * status/body already computed and cached by a prior attempt (see
+     * {@code IdempotencyService#fail}). Rendered as-is so a replayed
+     * business failure is byte-for-byte identical to the original.
+     */
+    @ExceptionHandler(IdempotentReplayException.class)
+    public ResponseEntity<Object> handleIdempotentReplay(IdempotentReplayException ex) {
+        return ResponseEntity.status(ex.getHttpStatus()).body(ex.getBody());
+    }
+
+    /**
+     * Thrown by Spring MVC itself when {@code @RequestHeader("Idempotency-Key")}
+     * is absent from a money-moving POST. Handled explicitly (rather than
+     * relying on Spring Boot's default error page) so it comes back in the
+     * same {@link ProblemDetail} shape as every other client error here.
+     */
+    @ExceptionHandler(MissingRequestHeaderException.class)
+    public ProblemDetail handleMissingRequestHeader(MissingRequestHeaderException ex) {
+        ProblemDetail problem = ProblemDetail.forStatusAndDetail(HttpStatus.BAD_REQUEST,
+                "Required header '" + ex.getHeaderName() + "' is missing");
+        problem.setTitle("Bad Request");
+        problem.setType(ProblemDetailFactory.typeUri("missing-required-header"));
+        problem.setProperty("code", "MISSING_REQUIRED_HEADER");
         return problem;
     }
 
@@ -47,7 +71,7 @@ public class GlobalExceptionHandler {
         ProblemDetail problem = ProblemDetail.forStatusAndDetail(HttpStatus.CONFLICT,
                 "The record was modified concurrently; reload and retry the operation");
         problem.setTitle("Conflict");
-        problem.setType(PROBLEM_TYPE_BASE.resolve("optimistic-lock-conflict"));
+        problem.setType(ProblemDetailFactory.typeUri("optimistic-lock-conflict"));
         problem.setProperty("code", "OPTIMISTIC_LOCK_CONFLICT");
         return problem;
     }
@@ -62,7 +86,7 @@ public class GlobalExceptionHandler {
 
         ProblemDetail problem = ProblemDetail.forStatusAndDetail(HttpStatus.BAD_REQUEST, "Request validation failed");
         problem.setTitle("Bad Request");
-        problem.setType(PROBLEM_TYPE_BASE.resolve("validation-failed"));
+        problem.setType(ProblemDetailFactory.typeUri("validation-failed"));
         problem.setProperty("code", "VALIDATION_FAILED");
         problem.setProperty("errors", fieldErrors);
         return problem;
