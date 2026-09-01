@@ -52,6 +52,10 @@ public class Account {
     @Column(name = "balance_paise", nullable = false)
     private long balancePaise;
 
+    @Enumerated(EnumType.STRING)
+    @Column(name = "account_type", nullable = false, length = 16, updatable = false)
+    private AccountType accountType;
+
     @Version
     @Column(nullable = false)
     private long version;
@@ -74,6 +78,7 @@ public class Account {
         account.userId = userId;
         account.currency = Currency.INR;
         account.balancePaise = 0L;
+        account.accountType = AccountType.USER;
         return account;
     }
 
@@ -110,6 +115,10 @@ public class Account {
 
     public long getBalancePaise() {
         return balancePaise;
+    }
+
+    public AccountType getAccountType() {
+        return accountType;
     }
 
     public long getVersion() {

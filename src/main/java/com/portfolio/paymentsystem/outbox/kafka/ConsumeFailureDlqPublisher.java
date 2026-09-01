@@ -114,9 +114,12 @@ public class ConsumeFailureDlqPublisher implements ConsumerRecordRecoverer {
         if (originalTopic.equals(outboxProperties.getTransferCompletedTopic())) {
             return outboxProperties.getTransferDlqTopic();
         }
+        if (originalTopic.equals(outboxProperties.getPaymentProcessingTopic())) {
+            return outboxProperties.getPaymentDlqTopic();
+        }
         // Fallback for any future topic this class doesn't explicitly know
-        // about yet (e.g. an M5 event type) — keeps this recoverer generic
-        // enough to not require a code change for every new topic.
+        // about yet — keeps this recoverer generic enough to not require a
+        // code change for every new topic.
         return originalTopic + ".dlq";
     }
 

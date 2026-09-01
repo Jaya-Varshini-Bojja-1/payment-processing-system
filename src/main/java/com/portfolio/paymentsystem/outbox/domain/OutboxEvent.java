@@ -93,6 +93,18 @@ public class OutboxEvent implements Persistable<UUID> {
     public static OutboxEvent create(
             UUID id, String aggregateType, UUID aggregateId, String eventType,
             String topic, String dlqTopic, String payloadJson) {
+        return create(id, aggregateType, aggregateId, eventType, topic, dlqTopic, payloadJson, Instant.now());
+    }
+
+    /**
+     * As above, but the row is not due for publishing until {@code firstAttemptAt} —
+     * used for a gateway-retry backoff window (see M5's
+     * {@code PaymentEventPublisher}) rather than the immediate-dispatch default
+     * every M4 call site still uses.
+     */
+    public static OutboxEvent create(
+            UUID id, String aggregateType, UUID aggregateId, String eventType,
+            String topic, String dlqTopic, String payloadJson, Instant firstAttemptAt) {
         OutboxEvent event = new OutboxEvent();
         event.id = id;
         event.aggregateType = aggregateType;
@@ -103,7 +115,7 @@ public class OutboxEvent implements Persistable<UUID> {
         event.payloadJson = payloadJson;
         event.status = OutboxStatus.PENDING;
         event.attemptCount = 0;
-        event.nextAttemptAt = Instant.now();
+        event.nextAttemptAt = firstAttemptAt;
         return event;
     }
 

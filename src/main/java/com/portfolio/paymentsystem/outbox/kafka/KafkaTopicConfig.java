@@ -29,4 +29,14 @@ public class KafkaTopicConfig {
     public NewTopic transfersDlqTopic(OutboxProperties outboxProperties) {
         return new NewTopic(outboxProperties.getTransferDlqTopic(), 1, (short) 1);
     }
+
+    @Bean
+    public NewTopic paymentsProcessTopic(OutboxProperties outboxProperties) {
+        return new NewTopic(outboxProperties.getPaymentProcessingTopic(), 1, (short) 1);
+    }
+
+    @Bean
+    public NewTopic paymentsDlqTopic(OutboxProperties outboxProperties) {
+        return new NewTopic(outboxProperties.getPaymentDlqTopic(), 1, (short) 1);
+    }
 }

@@ -17,6 +17,15 @@ public class OutboxProperties {
     private String transferDlqTopic = "transfers.dlq";
 
     /**
+     * M5: one processing topic for both deposit and withdrawal
+     * {@code PaymentTransaction}s (see PROJECT_PLAN.md section 11 — "not a
+     * complex delayed-topic topology," a single topic keyed by
+     * {@code paymentTransactionId} is enough).
+     */
+    private String paymentProcessingTopic = "payments.process";
+    private String paymentDlqTopic = "payments.dlq";
+
+    /**
      * Registers the scheduled publisher bean at all. Overridden to
      * {@code false} for the general test classpath (see
      * {@code src/test/resources/application.yml}) so ordinary Postgres/Redis
@@ -74,6 +83,22 @@ public class OutboxProperties {
 
     public void setTransferDlqTopic(String transferDlqTopic) {
         this.transferDlqTopic = transferDlqTopic;
+    }
+
+    public String getPaymentProcessingTopic() {
+        return paymentProcessingTopic;
+    }
+
+    public void setPaymentProcessingTopic(String paymentProcessingTopic) {
+        this.paymentProcessingTopic = paymentProcessingTopic;
+    }
+
+    public String getPaymentDlqTopic() {
+        return paymentDlqTopic;
+    }
+
+    public void setPaymentDlqTopic(String paymentDlqTopic) {
+        this.paymentDlqTopic = paymentDlqTopic;
     }
 
     public boolean isPublisherEnabled() {

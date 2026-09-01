@@ -88,6 +88,12 @@ app:
   outbox:
     transfer-completed-topic: ${TRANSFERS_COMPLETED_TOPIC:transfers.completed}
     transfer-dlq-topic: ${TRANSFERS_DLQ_TOPIC:transfers.dlq}
+    # M5: deposit/withdrawal gateway dispatch. One processing topic for both
+    # types (see PROJECT_PLAN.md section 11); the shared DLQ topic also
+    # receives PUBLISH_FAILED/CONSUME_FAILED entries from the same generic
+    # outbox/Kafka-consumer machinery M4 already built.
+    payment-processing-topic: ${PAYMENTS_PROCESS_TOPIC:payments.process}
+    payment-dlq-topic: ${PAYMENTS_DLQ_TOPIC:payments.dlq}
     publisher-enabled: ${OUTBOX_PUBLISHER_ENABLED:true}
     publish-batch-size: ${OUTBOX_PUBLISH_BATCH_SIZE:20}
     poll-interval-ms: ${OUTBOX_POLL_INTERVAL_MS:2000}
@@ -98,3 +104,19 @@ app:
     stale-publishing-timeout: ${OUTBOX_STALE_PUBLISHING_TIMEOUT:PT1M}
     consumer-max-attempts: ${OUTBOX_CONSUMER_MAX_ATTEMPTS:3}
     consumer-retry-backoff: ${OUTBOX_CONSUMER_RETRY_BACKOFF:PT0.5S}
+  # M5: gateway-level retry policy for PaymentTransaction processing --
+  # independent of the outbox's own publish-retry settings above (this
+  # governs re-dispatch to the simulated gateway after a retryable
+  # failure, not Kafka delivery retries).
+  payment:
+    max-gateway-attempts: ${PAYMENT_MAX_GATEWAY_ATTEMPTS:3}
+    retry-initial-backoff: ${PAYMENT_RETRY_INITIAL_BACKOFF:PT2S}
+    retry-backoff-multiplier: ${PAYMENT_RETRY_BACKOFF_MULTIPLIER:2.0}
+  # M5: deterministic amount-bucketed simulated gateway (see GatewayProperties).
+  # amountPaise % 100 selects the demo scenario: [0,80) succeeds; [80,90)
+  # fails once then succeeds on retry; [90,95) always fails retryably
+  # (exhausts into REQUIRES_MANUAL_REVIEW); [95,100) is a permanent decline.
+  gateway:
+    success-upper-bound: ${GATEWAY_SUCCESS_UPPER_BOUND:80}
+    retry-succeeds-upper-bound: ${GATEWAY_RETRY_SUCCEEDS_UPPER_BOUND:90}
+    non-retryable-upper-bound: ${GATEWAY_NON_RETRYABLE_UPPER_BOUND:95}

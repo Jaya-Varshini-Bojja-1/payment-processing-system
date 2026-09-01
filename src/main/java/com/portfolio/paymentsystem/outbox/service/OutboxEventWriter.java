@@ -1,5 +1,6 @@
 package com.portfolio.paymentsystem.outbox.service;
 
+import java.time.Duration;
 import java.time.Instant;
 import java.util.UUID;
 
@@ -47,12 +48,27 @@ public class OutboxEventWriter {
     public UUID append(
             String aggregateType, UUID aggregateId, String eventType,
             String topic, String dlqTopic, Object payload) {
+        return append(aggregateType, aggregateId, eventType, topic, dlqTopic, payload, Duration.ZERO);
+    }
+
+    /**
+     * As above, but the row is not claimable by {@code OutboxPublisher} until
+     * {@code initialDelay} has elapsed — M5's gateway-retry backoff (see
+     * {@code PaymentEventPublisher}) uses this so a retryable failure doesn't
+     * hammer the gateway again immediately. {@code occurredAt} in the
+     * envelope is still "now" regardless of the delay: that field means
+     * "when this event happened," not "when it's due."
+     */
+    public UUID append(
+            String aggregateType, UUID aggregateId, String eventType,
+            String topic, String dlqTopic, Object payload, Duration initialDelay) {
         UUID eventId = UUID.randomUUID();
         OutboxEventEnvelope<Object> envelope = new OutboxEventEnvelope<>(
                 eventId, eventType, aggregateType, aggregateId, Instant.now(), payload);
 
         OutboxEvent event = OutboxEvent.create(
-                eventId, aggregateType, aggregateId, eventType, topic, dlqTopic, writeJson(envelope));
+                eventId, aggregateType, aggregateId, eventType, topic, dlqTopic, writeJson(envelope),
+                Instant.now().plus(initialDelay));
 
         try {
             outboxEventRepository.saveAndFlush(event);
