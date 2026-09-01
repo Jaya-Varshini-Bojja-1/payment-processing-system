@@ -1,5 +1,4 @@
 # Host-local run. Credentials come from the environment — never commit passwords.
-# Kafka is not on the classpath until M4 needs it.
 
 spring:
   application:
@@ -30,6 +29,26 @@ spring:
       port: ${REDIS_PORT:6379}
       connect-timeout: 2s
       timeout: 2s
+  # M4: outbox -> Kafka -> idempotent consumer. Payloads travel as plain
+  # JSON strings (see OutboxEvent.payloadJson) — the publisher never
+  # deserializes a domain object, it just relays the text Postgres already
+  # holds, so String (de)serializers are all either side needs.
+  kafka:
+    bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
+    producer:
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.apache.kafka.common.serialization.StringSerializer
+      acks: all
+      properties:
+        enable.idempotence: true
+    consumer:
+      group-id: payment-processing-system
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      auto-offset-reset: earliest
+      enable-auto-commit: false
+    listener:
+      ack-mode: manual_immediate
 
 server:
   port: 8080
@@ -63,3 +82,19 @@ app:
     redis-ttl: ${IDEMPOTENCY_REDIS_TTL:P1D}
   transfer:
     max-optimistic-lock-attempts: ${TRANSFER_MAX_LOCK_ATTEMPTS:3}
+  # M4: transactional outbox -> Kafka. Topic names are config, not code, so
+  # OutboxPublisher never needs to know an event type called "TransferCompleted"
+  # exists (see TransferEventPublisher, which is the one place that does).
+  outbox:
+    transfer-completed-topic: ${TRANSFERS_COMPLETED_TOPIC:transfers.completed}
+    transfer-dlq-topic: ${TRANSFERS_DLQ_TOPIC:transfers.dlq}
+    publisher-enabled: ${OUTBOX_PUBLISHER_ENABLED:true}
+    publish-batch-size: ${OUTBOX_PUBLISH_BATCH_SIZE:20}
+    poll-interval-ms: ${OUTBOX_POLL_INTERVAL_MS:2000}
+    max-attempts: ${OUTBOX_MAX_ATTEMPTS:5}
+    initial-backoff: ${OUTBOX_INITIAL_BACKOFF:PT1S}
+    backoff-multiplier: ${OUTBOX_BACKOFF_MULTIPLIER:2.0}
+    publish-timeout: ${OUTBOX_PUBLISH_TIMEOUT:PT5S}
+    stale-publishing-timeout: ${OUTBOX_STALE_PUBLISHING_TIMEOUT:PT1M}
+    consumer-max-attempts: ${OUTBOX_CONSUMER_MAX_ATTEMPTS:3}
+    consumer-retry-backoff: ${OUTBOX_CONSUMER_RETRY_BACKOFF:PT0.5S}

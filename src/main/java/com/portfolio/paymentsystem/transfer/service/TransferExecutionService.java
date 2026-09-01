@@ -15,6 +15,7 @@ import com.portfolio.paymentsystem.ledger.service.LedgerPostingRequest;
 import com.portfolio.paymentsystem.ledger.service.LedgerService;
 import com.portfolio.paymentsystem.transfer.domain.Transfer;
 import com.portfolio.paymentsystem.transfer.dto.TransferResponse;
+import com.portfolio.paymentsystem.transfer.event.TransferEventPublisher;
 import com.portfolio.paymentsystem.transfer.exception.InsufficientBalanceException;
 import com.portfolio.paymentsystem.transfer.exception.RecipientAccountNotFoundException;
 import com.portfolio.paymentsystem.transfer.repository.TransferRepository;
@@ -47,16 +48,19 @@ public class TransferExecutionService {
     private final TransferRepository transferRepository;
     private final LedgerService ledgerService;
     private final IdempotencyService idempotencyService;
+    private final TransferEventPublisher transferEventPublisher;
 
     public TransferExecutionService(
             AccountRepository accountRepository,
             TransferRepository transferRepository,
             LedgerService ledgerService,
-            IdempotencyService idempotencyService) {
+            IdempotencyService idempotencyService,
+            TransferEventPublisher transferEventPublisher) {
         this.accountRepository = accountRepository;
         this.transferRepository = transferRepository;
         this.ledgerService = ledgerService;
         this.idempotencyService = idempotencyService;
+        this.transferEventPublisher = transferEventPublisher;
     }
 
     @Transactional
@@ -81,6 +85,14 @@ public class TransferExecutionService {
                 "TRANSFER", transfer.getId(), "P2P transfer " + transfer.getId()));
 
         transfer.markCompleted();
+
+        // Same transaction as everything above: the outbox row for
+        // TransferCompleted either commits with the transfer + ledger, or
+        // (on any later failure in this method, or the caller rolling back
+        // on an optimistic-lock conflict) rolls back with them too. There is
+        // no way for money to move without this row existing, or for this
+        // row to exist without money having moved.
+        transferEventPublisher.publishCompleted(transfer);
 
         TransferResponse response = TransferResponse.from(transfer);
         idempotencyService.complete(idempotencyRecordId, transfer.getId(), HttpStatus.CREATED.value(), response);

@@ -23,7 +23,9 @@ import com.portfolio.paymentsystem.ledger.domain.EntryType;
 import com.portfolio.paymentsystem.ledger.domain.LedgerTransaction;
 import com.portfolio.paymentsystem.ledger.service.LedgerPostingRequest;
 import com.portfolio.paymentsystem.ledger.service.LedgerService;
+import com.portfolio.paymentsystem.transfer.domain.Transfer;
 import com.portfolio.paymentsystem.transfer.dto.TransferResponse;
+import com.portfolio.paymentsystem.transfer.event.TransferEventPublisher;
 import com.portfolio.paymentsystem.transfer.exception.InsufficientBalanceException;
 import com.portfolio.paymentsystem.transfer.exception.RecipientAccountNotFoundException;
 import com.portfolio.paymentsystem.transfer.repository.TransferRepository;
@@ -48,12 +50,15 @@ class TransferExecutionServiceTest {
     private LedgerService ledgerService;
     @Mock
     private IdempotencyService idempotencyService;
+    @Mock
+    private TransferEventPublisher transferEventPublisher;
 
     private TransferExecutionService executionService;
 
     @BeforeEach
     void setUp() {
-        executionService = new TransferExecutionService(accountRepository, transferRepository, ledgerService, idempotencyService);
+        executionService = new TransferExecutionService(
+                accountRepository, transferRepository, ledgerService, idempotencyService, transferEventPublisher);
     }
 
     @Test
@@ -90,6 +95,14 @@ class TransferExecutionServiceTest {
         assertThat(posted.lines().get(1).accountId()).isEqualTo(recipient.getId());
 
         verify(idempotencyService).complete(eq(idempotencyRecordId), any(), eq(201), any(TransferResponse.class));
+
+        // The outbox write happens on every successful attempt, in the same
+        // (mocked-out-here, real-in-production) transaction as the rest of
+        // this method — see TransferOutboxIntegrationTest for the proof that
+        // it is genuinely atomic with the ledger post against real Postgres.
+        ArgumentCaptor<Transfer> publishedTransferCaptor = ArgumentCaptor.forClass(Transfer.class);
+        verify(transferEventPublisher).publishCompleted(publishedTransferCaptor.capture());
+        assertThat(publishedTransferCaptor.getValue().getId()).isEqualTo(response.id());
     }
 
     @Test
@@ -101,7 +114,7 @@ class TransferExecutionServiceTest {
         assertThatThrownBy(() -> executionService.attempt(UUID.randomUUID(), senderUserId, recipientUserId, 1_000))
                 .isInstanceOf(AccountNotFoundException.class);
 
-        verifyNoInteractions(ledgerService, transferRepository, idempotencyService);
+        verifyNoInteractions(ledgerService, transferRepository, idempotencyService, transferEventPublisher);
     }
 
     @Test
@@ -114,7 +127,7 @@ class TransferExecutionServiceTest {
         assertThatThrownBy(() -> executionService.attempt(UUID.randomUUID(), sender.getUserId(), recipientUserId, 1_000))
                 .isInstanceOf(RecipientAccountNotFoundException.class);
 
-        verifyNoInteractions(ledgerService, transferRepository, idempotencyService);
+        verifyNoInteractions(ledgerService, transferRepository, idempotencyService, transferEventPublisher);
     }
 
     @Test
@@ -128,7 +141,7 @@ class TransferExecutionServiceTest {
         assertThatThrownBy(() -> executionService.attempt(UUID.randomUUID(), sender.getUserId(), recipient.getUserId(), 5_000))
                 .isInstanceOf(InsufficientBalanceException.class);
 
-        verifyNoInteractions(ledgerService, transferRepository, idempotencyService);
+        verifyNoInteractions(ledgerService, transferRepository, idempotencyService, transferEventPublisher);
     }
 
     private void setBalance(Account account, long balancePaise) {
