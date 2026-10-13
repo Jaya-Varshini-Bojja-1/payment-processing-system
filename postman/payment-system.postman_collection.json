@@ -1,0 +1,926 @@
+{
+	"info": {
+		"_postman_id": "6f1c2b6e-7d51-4f0a-9a56-3c7b1d5e0a11",
+		"name": "Payment Processing System",
+		"description": "End-to-end demo of the payment-processing-system API (INR wallets, ledger-backed transfers, async gateway deposits/withdrawals).\n\n**Setup**\n1. Start PostgreSQL, Redis and Kafka locally, then the Spring Boot app (see README).\n2. Import this collection and `payment-system.local.postman_environment.json`, then select the environment.\n3. Run the folders **in order** with the Collection Runner (or Newman): `00 Health` -> `01 Happy path` -> `02 Negative cases` -> `03 Session`. Folder `04 Rate limit (optional)` is separate and can be skipped.\n\n**How state flows**\nTest scripts store tokens, user ids, account ids, payment id and transfer id as *collection variables*; the environment only holds configuration (`baseUrl`, demo emails, demo password, amounts). Every money-moving POST gets a fresh `Idempotency-Key` (a UUID) generated in its pre-request script.\n\n**Payment polling**\nDeposits return `202 Accepted`; the money is only posted to the ledger after the outbox -> Kafka -> simulated gateway round trip. The `Poll payment ...` requests re-run themselves (via `postman.setNextRequest`) until the payment reaches a terminal status, so they need the Collection Runner / Newman. If you send one by hand, just click Send again until the status is terminal.\n\n**Simulated gateway scenarios** are selected by `amountPaise % 100`: 0-79 succeed, 80-89 fail once then succeed on retry, 90-94 keep failing (-> `REQUIRES_MANUAL_REVIEW`), 95-99 permanent decline (-> `FAILED`).\n\nThe demo password in the environment is a throwaway placeholder for local use only; no real credentials belong in this collection.",
+		"schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+	},
+	"auth": {
+		"type": "bearer",
+		"bearer": [
+			{ "key": "token", "value": "{{aliceToken}}", "type": "string" }
+		]
+	},
+	"item": [
+		{
+			"name": "00 Health",
+			"item": [
+				{
+					"name": "Actuator health (DB, Redis, Kafka)",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Status is 200', () => pm.response.to.have.status(200));",
+									"pm.test('Overall status is UP', () => pm.expect(pm.response.json().status).to.eql('UP'));"
+								]
+							}
+						}
+					],
+					"request": {
+						"auth": { "type": "noauth" },
+						"method": "GET",
+						"header": [],
+						"url": "{{baseUrl}}/actuator/health"
+					}
+				}
+			]
+		},
+		{
+			"name": "01 Happy path",
+			"description": "register -> login -> open account -> deposit -> verify settlement -> transfer -> inspect balances and ledger. Alice funds her wallet and sends money to Bob.",
+			"item": [
+				{
+					"name": "1.01 Register Alice",
+					"event": [
+						{
+							"listen": "prerequest",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"// Fresh run id => fresh, unique demo emails (see environment aliceEmail / bobEmail).",
+									"pm.collectionVariables.set('runId', Date.now().toString());"
+								]
+							}
+						},
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Status is 201', () => pm.response.to.have.status(201));",
+									"const body = pm.response.json();",
+									"pm.test('Role is USER', () => pm.expect(body.role).to.eql('USER'));",
+									"pm.collectionVariables.set('aliceUserId', body.id);"
+								]
+							}
+						}
+					],
+					"request": {
+						"auth": { "type": "noauth" },
+						"method": "POST",
+						"header": [ { "key": "Content-Type", "value": "application/json" } ],
+						"body": { "mode": "raw", "raw": "{\n  \"email\": \"{{aliceEmail}}\",\n  \"password\": \"{{password}}\"\n}", "options": { "raw": { "language": "json" } } },
+						"url": "{{baseUrl}}/api/v1/auth/register"
+					}
+				},
+				{
+					"name": "1.02 Register Bob",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Status is 201', () => pm.response.to.have.status(201));",
+									"pm.collectionVariables.set('bobUserId', pm.response.json().id);"
+								]
+							}
+						}
+					],
+					"request": {
+						"auth": { "type": "noauth" },
+						"method": "POST",
+						"header": [ { "key": "Content-Type", "value": "application/json" } ],
+						"body": { "mode": "raw", "raw": "{\n  \"email\": \"{{bobEmail}}\",\n  \"password\": \"{{password}}\"\n}", "options": { "raw": { "language": "json" } } },
+						"url": "{{baseUrl}}/api/v1/auth/register"
+					}
+				},
+				{
+					"name": "1.03 Login Alice",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Status is 200', () => pm.response.to.have.status(200));",
+									"const body = pm.response.json();",
+									"pm.test('Bearer token pair issued', () => {",
+									"  pm.expect(body.tokenType).to.eql('Bearer');",
+									"  pm.expect(body.accessToken).to.be.a('string').and.not.empty;",
+									"  pm.expect(body.refreshToken).to.be.a('string').and.not.empty;",
+									"});",
+									"pm.collectionVariables.set('aliceToken', body.accessToken);",
+									"pm.collectionVariables.set('aliceRefreshToken', body.refreshToken);"
+								]
+							}
+						}
+					],
+					"request": {
+						"auth": { "type": "noauth" },
+						"method": "POST",
+						"header": [ { "key": "Content-Type", "value": "application/json" } ],
+						"body": { "mode": "raw", "raw": "{\n  \"email\": \"{{aliceEmail}}\",\n  \"password\": \"{{password}}\"\n}", "options": { "raw": { "language": "json" } } },
+						"url": "{{baseUrl}}/api/v1/auth/login"
+					}
+				},
+				{
+					"name": "1.04 Login Bob",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Status is 200', () => pm.response.to.have.status(200));",
+									"const body = pm.response.json();",
+									"pm.collectionVariables.set('bobToken', body.accessToken);",
+									"pm.collectionVariables.set('bobRefreshToken', body.refreshToken);"
+								]
+							}
+						}
+					],
+					"request": {
+						"auth": { "type": "noauth" },
+						"method": "POST",
+						"header": [ { "key": "Content-Type", "value": "application/json" } ],
+						"body": { "mode": "raw", "raw": "{\n  \"email\": \"{{bobEmail}}\",\n  \"password\": \"{{password}}\"\n}", "options": { "raw": { "language": "json" } } },
+						"url": "{{baseUrl}}/api/v1/auth/login"
+					}
+				},
+				{
+					"name": "1.05 Open Alice's account",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Status is 201', () => pm.response.to.have.status(201));",
+									"const body = pm.response.json();",
+									"pm.test('Starts at zero INR', () => {",
+									"  pm.expect(body.balance.amountPaise).to.eql(0);",
+									"  pm.expect(body.balance.currency).to.eql('INR');",
+									"});",
+									"pm.collectionVariables.set('aliceAccountId', body.id);"
+								]
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [],
+						"url": "{{baseUrl}}/api/v1/accounts"
+					}
+				},
+				{
+					"name": "1.06 Open Bob's account",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Status is 201', () => pm.response.to.have.status(201));",
+									"pm.collectionVariables.set('bobAccountId', pm.response.json().id);"
+								]
+							}
+						}
+					],
+					"request": {
+						"auth": { "type": "bearer", "bearer": [ { "key": "token", "value": "{{bobToken}}", "type": "string" } ] },
+						"method": "POST",
+						"header": [],
+						"url": "{{baseUrl}}/api/v1/accounts"
+					}
+				},
+				{
+					"name": "1.07 Deposit into Alice's account (async, 202)",
+					"event": [
+						{
+							"listen": "prerequest",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"// Client-generated idempotency key; kept so the negative folder can replay it.",
+									"pm.collectionVariables.set('depositKey', pm.variables.replaceIn('{{$guid}}'));"
+								]
+							}
+						},
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Status is 202 Accepted', () => pm.response.to.have.status(202));",
+									"const body = pm.response.json();",
+									"pm.test('A DEPOSIT payment was accepted for the configured amount', () => {",
+									"  pm.expect(body.type).to.eql('DEPOSIT');",
+									"  pm.expect(body.amount.amountPaise).to.eql(Number(pm.variables.get('depositAmountPaise')));",
+									"});",
+									"pm.test('Not settled yet (no ledger post before the gateway succeeds)', () => {",
+									"  pm.expect(['PENDING', 'PROCESSING', 'RETRYING', 'SUCCEEDED']).to.include(body.status);",
+									"});",
+									"pm.collectionVariables.set('depositPaymentId', body.id);"
+								]
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [
+							{ "key": "Content-Type", "value": "application/json" },
+							{ "key": "Idempotency-Key", "value": "{{depositKey}}" }
+						],
+						"body": { "mode": "raw", "raw": "{\n  \"amountPaise\": {{depositAmountPaise}}\n}", "options": { "raw": { "language": "json" } } },
+						"url": "{{baseUrl}}/api/v1/payments/deposits"
+					}
+				},
+				{
+					"name": "1.08 Poll deposit until SUCCEEDED",
+					"event": [
+						{
+							"listen": "prerequest",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"// Give the outbox publisher / Kafka consumer a moment between polls.",
+									"if (Number(pm.collectionVariables.get('pollAttempts') || 0) > 0) { setTimeout(function () {}, 1500); }"
+								]
+							}
+						},
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"const EXPECTED = 'SUCCEEDED';",
+									"const MAX_ATTEMPTS = 30;",
+									"const TERMINAL = ['SUCCEEDED', 'FAILED', 'REQUIRES_MANUAL_REVIEW'];",
+									"pm.test('Status is 200', () => pm.response.to.have.status(200));",
+									"const status = pm.response.json().status;",
+									"const attempts = Number(pm.collectionVariables.get('pollAttempts') || 0) + 1;",
+									"if (!TERMINAL.includes(status) && attempts < MAX_ATTEMPTS) {",
+									"  pm.collectionVariables.set('pollAttempts', attempts);",
+									"  postman.setNextRequest(pm.info.requestName);",
+									"} else {",
+									"  pm.collectionVariables.unset('pollAttempts');",
+									"  pm.test('Payment reached ' + EXPECTED, () => pm.expect(status).to.eql(EXPECTED));",
+									"  pm.test('Gateway reference recorded', () => pm.expect(pm.response.json().gatewayReference).to.be.a('string').and.not.empty);",
+									"}"
+								]
+							}
+						}
+					],
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": "{{baseUrl}}/api/v1/payments/{{depositPaymentId}}"
+					}
+				},
+				{
+					"name": "1.09 Alice's balance equals the deposit",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Status is 200', () => pm.response.to.have.status(200));",
+									"pm.test('Balance == deposit (materialized from ledger)', () => pm.expect(pm.response.json().balance.amountPaise).to.eql(Number(pm.variables.get('depositAmountPaise'))));"
+								]
+							}
+						}
+					],
+					"request": { "method": "GET", "header": [], "url": "{{baseUrl}}/api/v1/accounts/me" }
+				},
+				{
+					"name": "1.10 Transfer Alice -> Bob (sync, 201)",
+					"event": [
+						{
+							"listen": "prerequest",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.collectionVariables.set('transferKey', pm.variables.replaceIn('{{$guid}}'));"
+								]
+							}
+						},
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Status is 201 Created', () => pm.response.to.have.status(201));",
+									"const body = pm.response.json();",
+									"pm.test('Transfer completed synchronously between the right accounts', () => {",
+									"  pm.expect(body.status).to.eql('COMPLETED');",
+									"  pm.expect(body.amount.amountPaise).to.eql(Number(pm.variables.get('transferAmountPaise')));",
+									"  pm.expect(body.sourceAccountId).to.eql(pm.collectionVariables.get('aliceAccountId'));",
+									"  pm.expect(body.destinationAccountId).to.eql(pm.collectionVariables.get('bobAccountId'));",
+									"});",
+									"pm.collectionVariables.set('transferId', body.id);"
+								]
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [
+							{ "key": "Content-Type", "value": "application/json" },
+							{ "key": "Idempotency-Key", "value": "{{transferKey}}" }
+						],
+						"body": { "mode": "raw", "raw": "{\n  \"toUserId\": \"{{bobUserId}}\",\n  \"amountPaise\": {{transferAmountPaise}}\n}", "options": { "raw": { "language": "json" } } },
+						"url": "{{baseUrl}}/api/v1/transfers"
+					}
+				},
+				{
+					"name": "1.11 Bob reads the transfer (recipient access)",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Status is 200', () => pm.response.to.have.status(200));",
+									"pm.test('Same transfer id', () => pm.expect(pm.response.json().id).to.eql(pm.collectionVariables.get('transferId')));"
+								]
+							}
+						}
+					],
+					"request": {
+						"auth": { "type": "bearer", "bearer": [ { "key": "token", "value": "{{bobToken}}", "type": "string" } ] },
+						"method": "GET",
+						"header": [],
+						"url": "{{baseUrl}}/api/v1/transfers/{{transferId}}"
+					}
+				},
+				{
+					"name": "1.12 Alice's balance = deposit - transfer",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Status is 200', () => pm.response.to.have.status(200));",
+									"const expected = Number(pm.variables.get('depositAmountPaise')) - Number(pm.variables.get('transferAmountPaise'));",
+									"pm.test('Balance is ' + expected, () => pm.expect(pm.response.json().balance.amountPaise).to.eql(expected));"
+								]
+							}
+						}
+					],
+					"request": { "method": "GET", "header": [], "url": "{{baseUrl}}/api/v1/accounts/me" }
+				},
+				{
+					"name": "1.13 Bob's balance = transfer",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Status is 200', () => pm.response.to.have.status(200));",
+									"pm.test('Balance == transfer amount', () => pm.expect(pm.response.json().balance.amountPaise).to.eql(Number(pm.variables.get('transferAmountPaise'))));"
+								]
+							}
+						}
+					],
+					"request": {
+						"auth": { "type": "bearer", "bearer": [ { "key": "token", "value": "{{bobToken}}", "type": "string" } ] },
+						"method": "GET",
+						"header": [],
+						"url": "{{baseUrl}}/api/v1/accounts/me"
+					}
+				},
+				{
+					"name": "1.14 Alice's ledger (CREDIT deposit, DEBIT transfer)",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Status is 200', () => pm.response.to.have.status(200));",
+									"const entries = pm.response.json().content;",
+									"pm.test('Exactly two ledger lines so far', () => pm.expect(entries.length).to.eql(2));",
+									"const signed = entries.reduce((sum, e) => sum + (e.entryType === 'CREDIT' ? 1 : -1) * e.amount.amountPaise, 0);",
+									"const expected = Number(pm.variables.get('depositAmountPaise')) - Number(pm.variables.get('transferAmountPaise'));",
+									"pm.test('Signed ledger sum equals the materialized balance', () => pm.expect(signed).to.eql(expected));",
+									"pm.test('Newest entry is the transfer DEBIT', () => pm.expect(entries[0].entryType).to.eql('DEBIT'));"
+								]
+							}
+						}
+					],
+					"request": { "method": "GET", "header": [], "url": "{{baseUrl}}/api/v1/accounts/{{aliceAccountId}}/ledger?page=0&size=20" }
+				},
+				{
+					"name": "1.15 Bob's ledger (CREDIT transfer)",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Status is 200', () => pm.response.to.have.status(200));",
+									"const entries = pm.response.json().content;",
+									"pm.test('One CREDIT line for the transfer amount', () => {",
+									"  pm.expect(entries.length).to.eql(1);",
+									"  pm.expect(entries[0].entryType).to.eql('CREDIT');",
+									"  pm.expect(entries[0].amount.amountPaise).to.eql(Number(pm.variables.get('transferAmountPaise')));",
+									"});"
+								]
+							}
+						}
+					],
+					"request": {
+						"auth": { "type": "bearer", "bearer": [ { "key": "token", "value": "{{bobToken}}", "type": "string" } ] },
+						"method": "GET",
+						"header": [],
+						"url": "{{baseUrl}}/api/v1/accounts/{{bobAccountId}}/ledger?page=0&size=20"
+					}
+				}
+			]
+		},
+		{
+			"name": "02 Negative cases",
+			"description": "Run after `01 Happy path` (reuses its variables). Covers authentication, validation, idempotency (replay vs key reuse), funds checks, authorization and gateway failure outcomes. Alice's balance is verified unchanged at the end.",
+			"item": [
+				{
+					"name": "2.01 No token -> 401",
+					"event": [
+						{ "listen": "test", "script": { "type": "text/javascript", "exec": [ "pm.test('Status is 401', () => pm.response.to.have.status(401));" ] } }
+					],
+					"request": { "auth": { "type": "noauth" }, "method": "GET", "header": [], "url": "{{baseUrl}}/api/v1/accounts/me" }
+				},
+				{
+					"name": "2.02 Login with wrong password -> 401",
+					"event": [
+						{ "listen": "test", "script": { "type": "text/javascript", "exec": [
+							"pm.test('Status is 401', () => pm.response.to.have.status(401));",
+							"pm.test('code is INVALID_CREDENTIALS', () => pm.expect(pm.response.json().code).to.eql('INVALID_CREDENTIALS'));"
+						] } }
+					],
+					"request": {
+						"auth": { "type": "noauth" },
+						"method": "POST",
+						"header": [ { "key": "Content-Type", "value": "application/json" } ],
+						"body": { "mode": "raw", "raw": "{\n  \"email\": \"{{aliceEmail}}\",\n  \"password\": \"WrongPassw0rd!\"\n}", "options": { "raw": { "language": "json" } } },
+						"url": "{{baseUrl}}/api/v1/auth/login"
+					}
+				},
+				{
+					"name": "2.03 Register duplicate email -> 409",
+					"event": [
+						{ "listen": "test", "script": { "type": "text/javascript", "exec": [
+							"pm.test('Status is 409', () => pm.response.to.have.status(409));",
+							"pm.test('code is EMAIL_ALREADY_EXISTS', () => pm.expect(pm.response.json().code).to.eql('EMAIL_ALREADY_EXISTS'));"
+						] } }
+					],
+					"request": {
+						"auth": { "type": "noauth" },
+						"method": "POST",
+						"header": [ { "key": "Content-Type", "value": "application/json" } ],
+						"body": { "mode": "raw", "raw": "{\n  \"email\": \"{{aliceEmail}}\",\n  \"password\": \"{{password}}\"\n}", "options": { "raw": { "language": "json" } } },
+						"url": "{{baseUrl}}/api/v1/auth/register"
+					}
+				},
+				{
+					"name": "2.04 Register with weak password -> 400",
+					"event": [
+						{ "listen": "test", "script": { "type": "text/javascript", "exec": [
+							"pm.test('Status is 400', () => pm.response.to.have.status(400));",
+							"pm.test('code is VALIDATION_FAILED', () => pm.expect(pm.response.json().code).to.eql('VALIDATION_FAILED'));"
+						] } }
+					],
+					"request": {
+						"auth": { "type": "noauth" },
+						"method": "POST",
+						"header": [ { "key": "Content-Type", "value": "application/json" } ],
+						"body": { "mode": "raw", "raw": "{\n  \"email\": \"weak.{{runId}}@example.com\",\n  \"password\": \"short\"\n}", "options": { "raw": { "language": "json" } } },
+						"url": "{{baseUrl}}/api/v1/auth/register"
+					}
+				},
+				{
+					"name": "2.05 Open a second account -> 409",
+					"event": [
+						{ "listen": "test", "script": { "type": "text/javascript", "exec": [
+							"pm.test('Status is 409', () => pm.response.to.have.status(409));",
+							"pm.test('code is ACCOUNT_ALREADY_EXISTS', () => pm.expect(pm.response.json().code).to.eql('ACCOUNT_ALREADY_EXISTS'));"
+						] } }
+					],
+					"request": { "method": "POST", "header": [], "url": "{{baseUrl}}/api/v1/accounts" }
+				},
+				{
+					"name": "2.06 Transfer without Idempotency-Key -> 400",
+					"event": [
+						{ "listen": "test", "script": { "type": "text/javascript", "exec": [
+							"pm.test('Status is 400', () => pm.response.to.have.status(400));",
+							"pm.test('code is MISSING_REQUIRED_HEADER', () => pm.expect(pm.response.json().code).to.eql('MISSING_REQUIRED_HEADER'));"
+						] } }
+					],
+					"request": {
+						"method": "POST",
+						"header": [ { "key": "Content-Type", "value": "application/json" } ],
+						"body": { "mode": "raw", "raw": "{\n  \"toUserId\": \"{{bobUserId}}\",\n  \"amountPaise\": 100\n}", "options": { "raw": { "language": "json" } } },
+						"url": "{{baseUrl}}/api/v1/transfers"
+					}
+				},
+				{
+					"name": "2.07 Replay transfer (same key + body) -> 200, same transfer",
+					"event": [
+						{ "listen": "test", "script": { "type": "text/javascript", "exec": [
+							"pm.test('Status is 200 (replay, not 201)', () => pm.response.to.have.status(200));",
+							"pm.test('Original transfer returned, nothing re-executed', () => pm.expect(pm.response.json().id).to.eql(pm.collectionVariables.get('transferId')));"
+						] } }
+					],
+					"request": {
+						"method": "POST",
+						"header": [
+							{ "key": "Content-Type", "value": "application/json" },
+							{ "key": "Idempotency-Key", "value": "{{transferKey}}" }
+						],
+						"body": { "mode": "raw", "raw": "{\n  \"toUserId\": \"{{bobUserId}}\",\n  \"amountPaise\": {{transferAmountPaise}}\n}", "options": { "raw": { "language": "json" } } },
+						"url": "{{baseUrl}}/api/v1/transfers"
+					}
+				},
+				{
+					"name": "2.08 Reuse transfer key with different body -> 422",
+					"event": [
+						{ "listen": "test", "script": { "type": "text/javascript", "exec": [
+							"pm.test('Status is 422', () => pm.response.to.have.status(422));",
+							"pm.test('code is IDEMPOTENCY_KEY_REUSED', () => pm.expect(pm.response.json().code).to.eql('IDEMPOTENCY_KEY_REUSED'));"
+						] } }
+					],
+					"request": {
+						"method": "POST",
+						"header": [
+							{ "key": "Content-Type", "value": "application/json" },
+							{ "key": "Idempotency-Key", "value": "{{transferKey}}" }
+						],
+						"body": { "mode": "raw", "raw": "{\n  \"toUserId\": \"{{bobUserId}}\",\n  \"amountPaise\": 1\n}", "options": { "raw": { "language": "json" } } },
+						"url": "{{baseUrl}}/api/v1/transfers"
+					}
+				},
+				{
+					"name": "2.09 Transfer more than the balance -> 400",
+					"event": [
+						{ "listen": "test", "script": { "type": "text/javascript", "exec": [
+							"pm.test('Status is 400', () => pm.response.to.have.status(400));",
+							"pm.test('code is INSUFFICIENT_BALANCE', () => pm.expect(pm.response.json().code).to.eql('INSUFFICIENT_BALANCE'));"
+						] } }
+					],
+					"request": {
+						"method": "POST",
+						"header": [
+							{ "key": "Content-Type", "value": "application/json" },
+							{ "key": "Idempotency-Key", "value": "{{$guid}}" }
+						],
+						"body": { "mode": "raw", "raw": "{\n  \"toUserId\": \"{{bobUserId}}\",\n  \"amountPaise\": 999999999\n}", "options": { "raw": { "language": "json" } } },
+						"url": "{{baseUrl}}/api/v1/transfers"
+					}
+				},
+				{
+					"name": "2.10 Transfer to yourself -> 400",
+					"event": [
+						{ "listen": "test", "script": { "type": "text/javascript", "exec": [
+							"pm.test('Status is 400', () => pm.response.to.have.status(400));",
+							"pm.test('code is SELF_TRANSFER_NOT_ALLOWED', () => pm.expect(pm.response.json().code).to.eql('SELF_TRANSFER_NOT_ALLOWED'));"
+						] } }
+					],
+					"request": {
+						"method": "POST",
+						"header": [
+							{ "key": "Content-Type", "value": "application/json" },
+							{ "key": "Idempotency-Key", "value": "{{$guid}}" }
+						],
+						"body": { "mode": "raw", "raw": "{\n  \"toUserId\": \"{{aliceUserId}}\",\n  \"amountPaise\": 100\n}", "options": { "raw": { "language": "json" } } },
+						"url": "{{baseUrl}}/api/v1/transfers"
+					}
+				},
+				{
+					"name": "2.11 Transfer to unknown user -> 404",
+					"event": [
+						{ "listen": "test", "script": { "type": "text/javascript", "exec": [
+							"pm.test('Status is 404', () => pm.response.to.have.status(404));",
+							"pm.test('code is RECIPIENT_ACCOUNT_NOT_FOUND', () => pm.expect(pm.response.json().code).to.eql('RECIPIENT_ACCOUNT_NOT_FOUND'));"
+						] } }
+					],
+					"request": {
+						"method": "POST",
+						"header": [
+							{ "key": "Content-Type", "value": "application/json" },
+							{ "key": "Idempotency-Key", "value": "{{$guid}}" }
+						],
+						"body": { "mode": "raw", "raw": "{\n  \"toUserId\": \"{{$guid}}\",\n  \"amountPaise\": 100\n}", "options": { "raw": { "language": "json" } } },
+						"url": "{{baseUrl}}/api/v1/transfers"
+					}
+				},
+				{
+					"name": "2.12 Transfer with zero amount -> 400",
+					"event": [
+						{ "listen": "test", "script": { "type": "text/javascript", "exec": [
+							"pm.test('Status is 400', () => pm.response.to.have.status(400));",
+							"pm.test('code is VALIDATION_FAILED', () => pm.expect(pm.response.json().code).to.eql('VALIDATION_FAILED'));"
+						] } }
+					],
+					"request": {
+						"method": "POST",
+						"header": [
+							{ "key": "Content-Type", "value": "application/json" },
+							{ "key": "Idempotency-Key", "value": "{{$guid}}" }
+						],
+						"body": { "mode": "raw", "raw": "{\n  \"toUserId\": \"{{bobUserId}}\",\n  \"amountPaise\": 0\n}", "options": { "raw": { "language": "json" } } },
+						"url": "{{baseUrl}}/api/v1/transfers"
+					}
+				},
+				{
+					"name": "2.13 Replay deposit (same key + body) -> 200, same payment",
+					"event": [
+						{ "listen": "test", "script": { "type": "text/javascript", "exec": [
+							"pm.test('Status is 200 (replay, not 202)', () => pm.response.to.have.status(200));",
+							"pm.test('Original payment returned, no second deposit', () => pm.expect(pm.response.json().id).to.eql(pm.collectionVariables.get('depositPaymentId')));"
+						] } }
+					],
+					"request": {
+						"method": "POST",
+						"header": [
+							{ "key": "Content-Type", "value": "application/json" },
+							{ "key": "Idempotency-Key", "value": "{{depositKey}}" }
+						],
+						"body": { "mode": "raw", "raw": "{\n  \"amountPaise\": {{depositAmountPaise}}\n}", "options": { "raw": { "language": "json" } } },
+						"url": "{{baseUrl}}/api/v1/payments/deposits"
+					}
+				},
+				{
+					"name": "2.14 Reuse deposit key with different body -> 422",
+					"event": [
+						{ "listen": "test", "script": { "type": "text/javascript", "exec": [
+							"pm.test('Status is 422', () => pm.response.to.have.status(422));",
+							"pm.test('code is IDEMPOTENCY_KEY_REUSED', () => pm.expect(pm.response.json().code).to.eql('IDEMPOTENCY_KEY_REUSED'));"
+						] } }
+					],
+					"request": {
+						"method": "POST",
+						"header": [
+							{ "key": "Content-Type", "value": "application/json" },
+							{ "key": "Idempotency-Key", "value": "{{depositKey}}" }
+						],
+						"body": { "mode": "raw", "raw": "{\n  \"amountPaise\": 100\n}", "options": { "raw": { "language": "json" } } },
+						"url": "{{baseUrl}}/api/v1/payments/deposits"
+					}
+				},
+				{
+					"name": "2.15 Withdraw more than the balance -> 400",
+					"event": [
+						{ "listen": "test", "script": { "type": "text/javascript", "exec": [
+							"pm.test('Status is 400', () => pm.response.to.have.status(400));",
+							"pm.test('code is INSUFFICIENT_BALANCE', () => pm.expect(pm.response.json().code).to.eql('INSUFFICIENT_BALANCE'));"
+						] } }
+					],
+					"request": {
+						"method": "POST",
+						"header": [
+							{ "key": "Content-Type", "value": "application/json" },
+							{ "key": "Idempotency-Key", "value": "{{$guid}}" }
+						],
+						"body": { "mode": "raw", "raw": "{\n  \"amountPaise\": 999999999\n}", "options": { "raw": { "language": "json" } } },
+						"url": "{{baseUrl}}/api/v1/payments/withdrawals"
+					}
+				},
+				{
+					"name": "2.16 Bob reads Alice's payment -> 403",
+					"event": [
+						{ "listen": "test", "script": { "type": "text/javascript", "exec": [
+							"pm.test('Status is 403', () => pm.response.to.have.status(403));",
+							"pm.test('code is PAYMENT_ACCESS_DENIED', () => pm.expect(pm.response.json().code).to.eql('PAYMENT_ACCESS_DENIED'));"
+						] } }
+					],
+					"request": {
+						"auth": { "type": "bearer", "bearer": [ { "key": "token", "value": "{{bobToken}}", "type": "string" } ] },
+						"method": "GET",
+						"header": [],
+						"url": "{{baseUrl}}/api/v1/payments/{{depositPaymentId}}"
+					}
+				},
+				{
+					"name": "2.17 Bob reads Alice's ledger -> 403",
+					"event": [
+						{ "listen": "test", "script": { "type": "text/javascript", "exec": [
+							"pm.test('Status is 403', () => pm.response.to.have.status(403));",
+							"pm.test('code is ACCOUNT_ACCESS_DENIED', () => pm.expect(pm.response.json().code).to.eql('ACCOUNT_ACCESS_DENIED'));"
+						] } }
+					],
+					"request": {
+						"auth": { "type": "bearer", "bearer": [ { "key": "token", "value": "{{bobToken}}", "type": "string" } ] },
+						"method": "GET",
+						"header": [],
+						"url": "{{baseUrl}}/api/v1/accounts/{{aliceAccountId}}/ledger"
+					}
+				},
+				{
+					"name": "2.18 Deposit the gateway declines (amount ends in 95) -> accepted",
+					"event": [
+						{ "listen": "test", "script": { "type": "text/javascript", "exec": [
+							"pm.test('Status is 202 Accepted (failure only shows up asynchronously)', () => pm.response.to.have.status(202));",
+							"pm.collectionVariables.set('declinedPaymentId', pm.response.json().id);"
+						] } }
+					],
+					"request": {
+						"method": "POST",
+						"header": [
+							{ "key": "Content-Type", "value": "application/json" },
+							{ "key": "Idempotency-Key", "value": "{{$guid}}" }
+						],
+						"body": { "mode": "raw", "raw": "{\n  \"amountPaise\": 5095\n}", "options": { "raw": { "language": "json" } } },
+						"url": "{{baseUrl}}/api/v1/payments/deposits"
+					}
+				},
+				{
+					"name": "2.19 Poll declined deposit until FAILED",
+					"event": [
+						{ "listen": "prerequest", "script": { "type": "text/javascript", "exec": [
+							"if (Number(pm.collectionVariables.get('pollAttempts') || 0) > 0) { setTimeout(function () {}, 1500); }"
+						] } },
+						{ "listen": "test", "script": { "type": "text/javascript", "exec": [
+							"const EXPECTED = 'FAILED';",
+							"const MAX_ATTEMPTS = 30;",
+							"const TERMINAL = ['SUCCEEDED', 'FAILED', 'REQUIRES_MANUAL_REVIEW'];",
+							"pm.test('Status is 200', () => pm.response.to.have.status(200));",
+							"const body = pm.response.json();",
+							"const attempts = Number(pm.collectionVariables.get('pollAttempts') || 0) + 1;",
+							"if (!TERMINAL.includes(body.status) && attempts < MAX_ATTEMPTS) {",
+							"  pm.collectionVariables.set('pollAttempts', attempts);",
+							"  postman.setNextRequest(pm.info.requestName);",
+							"} else {",
+							"  pm.collectionVariables.unset('pollAttempts');",
+							"  pm.test('Payment reached ' + EXPECTED, () => pm.expect(body.status).to.eql(EXPECTED));",
+							"  pm.test('A failure reason is recorded', () => pm.expect(body.failureReason).to.be.a('string').and.not.empty);",
+							"}"
+						] } }
+					],
+					"request": { "method": "GET", "header": [], "url": "{{baseUrl}}/api/v1/payments/{{declinedPaymentId}}" }
+				},
+				{
+					"name": "2.20 Deposit that exhausts gateway retries (amount ends in 91) -> accepted",
+					"event": [
+						{ "listen": "test", "script": { "type": "text/javascript", "exec": [
+							"pm.test('Status is 202 Accepted', () => pm.response.to.have.status(202));",
+							"pm.collectionVariables.set('manualReviewPaymentId', pm.response.json().id);"
+						] } }
+					],
+					"request": {
+						"method": "POST",
+						"header": [
+							{ "key": "Content-Type", "value": "application/json" },
+							{ "key": "Idempotency-Key", "value": "{{$guid}}" }
+						],
+						"body": { "mode": "raw", "raw": "{\n  \"amountPaise\": 5091\n}", "options": { "raw": { "language": "json" } } },
+						"url": "{{baseUrl}}/api/v1/payments/deposits"
+					}
+				},
+				{
+					"name": "2.21 Poll exhausted deposit until REQUIRES_MANUAL_REVIEW",
+					"event": [
+						{ "listen": "prerequest", "script": { "type": "text/javascript", "exec": [
+							"if (Number(pm.collectionVariables.get('pollAttempts') || 0) > 0) { setTimeout(function () {}, 1500); }"
+						] } },
+						{ "listen": "test", "script": { "type": "text/javascript", "exec": [
+							"const EXPECTED = 'REQUIRES_MANUAL_REVIEW';",
+							"const MAX_ATTEMPTS = 40;",
+							"const TERMINAL = ['SUCCEEDED', 'FAILED', 'REQUIRES_MANUAL_REVIEW'];",
+							"pm.test('Status is 200', () => pm.response.to.have.status(200));",
+							"const body = pm.response.json();",
+							"const attempts = Number(pm.collectionVariables.get('pollAttempts') || 0) + 1;",
+							"if (!TERMINAL.includes(body.status) && attempts < MAX_ATTEMPTS) {",
+							"  pm.collectionVariables.set('pollAttempts', attempts);",
+							"  postman.setNextRequest(pm.info.requestName);",
+							"} else {",
+							"  pm.collectionVariables.unset('pollAttempts');",
+							"  pm.test('Payment reached ' + EXPECTED, () => pm.expect(body.status).to.eql(EXPECTED));",
+							"  pm.test('Gateway was retried before giving up', () => pm.expect(body.attemptCount).to.be.above(1));",
+							"}"
+						] } }
+					],
+					"request": { "method": "GET", "header": [], "url": "{{baseUrl}}/api/v1/payments/{{manualReviewPaymentId}}" }
+				},
+				{
+					"name": "2.22 Alice's balance is unchanged by every failed attempt",
+					"event": [
+						{ "listen": "test", "script": { "type": "text/javascript", "exec": [
+							"pm.test('Status is 200', () => pm.response.to.have.status(200));",
+							"const expected = Number(pm.variables.get('depositAmountPaise')) - Number(pm.variables.get('transferAmountPaise'));",
+							"pm.test('Balance still ' + expected + ' (failed/declined payments post nothing)', () => pm.expect(pm.response.json().balance.amountPaise).to.eql(expected));"
+						] } }
+					],
+					"request": { "method": "GET", "header": [], "url": "{{baseUrl}}/api/v1/accounts/me" }
+				}
+			]
+		},
+		{
+			"name": "03 Session",
+			"description": "Refresh-token rotation, then logout and proof that the access token is denylisted. Run after the folders above (Alice's tokens are consumed here).",
+			"item": [
+				{
+					"name": "3.01 Refresh Alice's tokens",
+					"event": [
+						{ "listen": "test", "script": { "type": "text/javascript", "exec": [
+							"pm.test('Status is 200', () => pm.response.to.have.status(200));",
+							"const body = pm.response.json();",
+							"pm.test('Refresh token was rotated', () => pm.expect(body.refreshToken).to.not.eql(pm.collectionVariables.get('aliceRefreshToken')));",
+							"pm.collectionVariables.set('aliceToken', body.accessToken);",
+							"pm.collectionVariables.set('aliceRefreshToken', body.refreshToken);"
+						] } }
+					],
+					"request": {
+						"auth": { "type": "noauth" },
+						"method": "POST",
+						"header": [ { "key": "Content-Type", "value": "application/json" } ],
+						"body": { "mode": "raw", "raw": "{\n  \"refreshToken\": \"{{aliceRefreshToken}}\"\n}", "options": { "raw": { "language": "json" } } },
+						"url": "{{baseUrl}}/api/v1/auth/refresh"
+					}
+				},
+				{
+					"name": "3.02 Logout Alice -> 204",
+					"event": [
+						{ "listen": "test", "script": { "type": "text/javascript", "exec": [ "pm.test('Status is 204', () => pm.response.to.have.status(204));" ] } }
+					],
+					"request": {
+						"method": "POST",
+						"header": [ { "key": "Content-Type", "value": "application/json" } ],
+						"body": { "mode": "raw", "raw": "{\n  \"refreshToken\": \"{{aliceRefreshToken}}\"\n}", "options": { "raw": { "language": "json" } } },
+						"url": "{{baseUrl}}/api/v1/auth/logout"
+					}
+				},
+				{
+					"name": "3.03 Use the logged-out access token -> 401",
+					"event": [
+						{ "listen": "test", "script": { "type": "text/javascript", "exec": [ "pm.test('Status is 401 (jti is denylisted in Redis)', () => pm.response.to.have.status(401));" ] } }
+					],
+					"request": { "method": "GET", "header": [], "url": "{{baseUrl}}/api/v1/users/me" }
+				}
+			]
+		},
+		{
+			"name": "04 Rate limit (optional)",
+			"description": "OPTIONAL and independent of the demo above. Requires `01 Happy path` to have run (needs Bob's token) and `app.rate-limit.enabled=true` (default). Fires 25 rapid withdrawal requests as Bob, each with a fresh Idempotency-Key and an amount far above his balance (so no money can ever move). The limit is 20 per minute per user per endpoint (default), so the later requests get `429` with a `Retry-After` header. This only throttles Bob's *withdrawal* endpoint for up to a minute; transfers and deposits use separate counters.",
+			"item": [
+				{
+					"name": "4.01 Burst of 25 withdrawals -> 429 after the limit",
+					"event": [
+						{ "listen": "test", "script": { "type": "text/javascript", "exec": [
+							"const base = pm.variables.get('baseUrl');",
+							"const token = pm.collectionVariables.get('bobToken');",
+							"const TOTAL = 25;",
+							"const statuses = [pm.response.code];",
+							"let retryAfter = pm.response.code === 429 ? pm.response.headers.get('Retry-After') : null;",
+							"",
+							"function fire(i) {",
+							"  if (i >= TOTAL) { finish(); return; }",
+							"  pm.sendRequest({",
+							"    url: base + '/api/v1/payments/withdrawals',",
+							"    method: 'POST',",
+							"    header: {",
+							"      'Authorization': 'Bearer ' + token,",
+							"      'Content-Type': 'application/json',",
+							"      'Idempotency-Key': pm.variables.replaceIn('{{$guid}}')",
+							"    },",
+							"    body: { mode: 'raw', raw: JSON.stringify({ amountPaise: 999999999 }) }",
+							"  }, function (err, res) {",
+							"    if (err) { statuses.push('error'); }",
+							"    else {",
+							"      statuses.push(res.code);",
+							"      if (res.code === 429 && !retryAfter) { retryAfter = res.headers.get('Retry-After'); }",
+							"    }",
+							"    fire(i + 1);",
+							"  });",
+							"}",
+							"",
+							"function finish() {",
+							"  console.log('Statuses: ' + statuses.join(','));",
+							"  pm.test('Early requests are processed normally (400 insufficient balance)', () => pm.expect(statuses[0] === 400 || statuses[0] === 429).to.be.true);",
+							"  pm.test('At least one request was rate limited (429)', () => pm.expect(statuses).to.include(429));",
+							"  pm.test('429 responses carry Retry-After', () => pm.expect(Number(retryAfter)).to.be.above(0));",
+							"}",
+							"",
+							"fire(1);"
+						] } }
+					],
+					"request": {
+						"auth": { "type": "bearer", "bearer": [ { "key": "token", "value": "{{bobToken}}", "type": "string" } ] },
+						"method": "POST",
+						"header": [
+							{ "key": "Content-Type", "value": "application/json" },
+							{ "key": "Idempotency-Key", "value": "{{$guid}}" }
+						],
+						"body": { "mode": "raw", "raw": "{\n  \"amountPaise\": 999999999\n}", "options": { "raw": { "language": "json" } } },
+						"url": "{{baseUrl}}/api/v1/payments/withdrawals"
+					}
+				}
+			]
+		}
+	]
+}

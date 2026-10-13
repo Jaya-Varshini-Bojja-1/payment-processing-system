@@ -736,7 +736,7 @@ V1 runs **on the host**. Docker Compose is out of V1 because this machine does n
 | **M4** | Outbox publisher + `payments.process` | Deposit accepted → processed without dual-write |
 | **M5** | PaymentTransaction + simulated gateway | Deposit/withdraw succeed/fail/retry/DLQ demoable |
 | **M6** | Redis denylist + rate limit + idempotency mirror | Redis failure never skips Postgres idempotency |
-| **M7** | Polish | Postman, README, resume bullets, light reconciliation |
+| **M7** (complete) | Polish | Postman, README, resume bullets (kept outside this repo), light reconciliation |
 
 **Do not start M1 until this plan is approved for implementation.** Current execution of the planning task stops at publishing this document.
 
