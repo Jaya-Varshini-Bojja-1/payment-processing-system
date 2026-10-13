@@ -115,6 +115,35 @@
                 <groupId>org.springframework.boot</groupId>
                 <artifactId>spring-boot-maven-plugin</artifactId>
             </plugin>
+            <!--
+                Activates the "test" Spring profile for every Maven test run, so
+                src/test/resources/application-test.yml (which Spring Boot resolves
+                as a genuinely separate classpath:/application-test.yml location) is
+                layered on top of src/main/resources/application.yml instead of a
+                same-named test-resources file shadowing it. See
+                application-test.yml's header comment for the full explanation.
+            -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-surefire-plugin</artifactId>
+                <configuration>
+                    <systemPropertyVariables>
+                        <spring.profiles.active>test</spring.profiles.active>
+                    </systemPropertyVariables>
+                    <!--
+                        Lets Mockito's inline Byte Buddy mock maker self-attach its
+                        Instrumentation agent in-process instead of falling back to
+                        spawning an external helper process to do the attach. On this
+                        memory-constrained host that external-process spawn can fail
+                        outright under load (MockitoInitializationException: "Could
+                        not initialize inline Byte Buddy mock maker... your JDK does
+                        not supply a working agent attachment mechanism"), which then
+                        poisons every subsequent @SpringBootTest in the same fork via
+                        spring-boot-starter-test's ResetMocksTestExecutionListener.
+                    -->
+                    <argLine>-Djdk.attach.allowAttachSelf=true -Xmx512m -XX:TieredStopAtLevel=1 -XX:ReservedCodeCacheSize=64m</argLine>
+                </configuration>
+            </plugin>
         </plugins>
     </build>
 </project>

@@ -78,6 +78,9 @@ public class OutboxPublisher {
 
     @Scheduled(fixedDelayString = "${app.outbox.poll-interval-ms:2000}")
     public void poll() {
+        if (!outboxProperties.isSchedulerEnabled()) {
+            return;
+        }
         publishDueEvents();
     }
 

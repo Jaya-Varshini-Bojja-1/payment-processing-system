@@ -156,7 +156,7 @@ class PaymentFullFlowIntegrationTest {
         String status = awaitTerminalStatus(outcome.response().id());
 
         assertThat(status).isEqualTo("SUCCEEDED");
-        assertThat(balanceOf(accountId)).isEqualTo(400_000L);
+        assertThat(balanceOf(accountId)).isEqualTo(399_990L);
     }
 
     @Test

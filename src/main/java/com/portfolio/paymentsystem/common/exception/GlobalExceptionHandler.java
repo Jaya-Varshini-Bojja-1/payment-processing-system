@@ -3,6 +3,7 @@ package com.portfolio.paymentsystem.common.exception;
 import java.util.List;
 import java.util.Map;
 
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ProblemDetail;
 import org.springframework.http.ResponseEntity;
@@ -13,6 +14,7 @@ import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 
 import com.portfolio.paymentsystem.common.idempotency.exception.IdempotentReplayException;
+import com.portfolio.paymentsystem.common.ratelimit.RateLimitExceededException;
 
 /**
  * Central RFC 7807 (Problem Details) error mapping.
@@ -74,6 +76,27 @@ public class GlobalExceptionHandler {
         problem.setType(ProblemDetailFactory.typeUri("optimistic-lock-conflict"));
         problem.setProperty("code", "OPTIMISTIC_LOCK_CONFLICT");
         return problem;
+    }
+
+    /**
+     * M6: thrown by {@code RateLimitInterceptor} when a user exceeds their
+     * per-scope budget on a money-moving POST. Handled separately from the
+     * generic {@link ApiException} path (rather than making
+     * {@link RateLimitExceededException} extend it) because a {@code 429}
+     * also needs a {@code Retry-After} header, which {@code ApiException}'s
+     * {@link ProblemDetail}-only contract has no place for.
+     */
+    @ExceptionHandler(RateLimitExceededException.class)
+    public ResponseEntity<ProblemDetail> handleRateLimitExceeded(RateLimitExceededException ex) {
+        ProblemDetail problem = ProblemDetail.forStatusAndDetail(HttpStatus.TOO_MANY_REQUESTS,
+                "Too many requests; retry after " + ex.getRetryAfterSeconds() + " second(s)");
+        problem.setTitle("Too Many Requests");
+        problem.setType(ProblemDetailFactory.typeUri("rate-limit-exceeded"));
+        problem.setProperty("code", "RATE_LIMIT_EXCEEDED");
+
+        return ResponseEntity.status(HttpStatus.TOO_MANY_REQUESTS)
+                .header(HttpHeaders.RETRY_AFTER, String.valueOf(ex.getRetryAfterSeconds()))
+                .body(problem);
     }
 
     @ExceptionHandler(MethodArgumentNotValidException.class)

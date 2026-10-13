@@ -18,6 +18,8 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 import com.portfolio.paymentsystem.common.dto.PageResponse;
+import com.portfolio.paymentsystem.common.ratelimit.RateLimitScope;
+import com.portfolio.paymentsystem.common.ratelimit.RateLimited;
 import com.portfolio.paymentsystem.identity.security.AuthenticatedUser;
 import com.portfolio.paymentsystem.transfer.domain.TransferStatus;
 import com.portfolio.paymentsystem.transfer.dto.CreateTransferRequest;
@@ -57,6 +59,8 @@ public class TransferController {
     @ApiResponse(responseCode = "404", description = "Caller or recipient has no account")
     @ApiResponse(responseCode = "409", description = "Concurrent duplicate request in flight, or transfer conflict after retries")
     @ApiResponse(responseCode = "422", description = "Idempotency-Key reused with a different request body")
+    @ApiResponse(responseCode = "429", description = "Rate limit exceeded for transfer creation; retry after the given Retry-After seconds")
+    @RateLimited(RateLimitScope.TRANSFER_CREATE)
     public ResponseEntity<TransferResponse> createTransfer(
             @AuthenticationPrincipal AuthenticatedUser principal,
             @Parameter(description = "Client-generated unique key for this transfer request", required = true)

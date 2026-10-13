@@ -70,6 +70,12 @@ springdoc:
 
 # Auth / JWT settings (M1). JWT_SECRET must be a Base64-encoded key of at least
 # 256 bits, provided via environment variable — never hardcode or commit it.
+# M6 hardening: the logout/revocation denylist (TokenDenylistService, keyed
+# jwt:denylist:<jti> in Redis, TTL = remaining token life) fails CLOSED if
+# Redis is unreachable — an unchecked-able token is treated as revoked
+# (401) rather than risk letting a logged-out token through. This uses the
+# same REDIS_HOST/REDIS_PORT settings under spring.data.redis above; no
+# separate env var is needed for this policy.
 app:
   jwt:
     secret: ${JWT_SECRET}
@@ -82,6 +88,17 @@ app:
     redis-ttl: ${IDEMPOTENCY_REDIS_TTL:P1D}
   transfer:
     max-optimistic-lock-attempts: ${TRANSFER_MAX_LOCK_ATTEMPTS:3}
+  # M6: per-user Redis rate limiting for money-moving POSTs (transfer create,
+  # deposit create, withdrawal create) — see RateLimitProperties/RateLimiterService.
+  # Fails OPEN if Redis is unreachable (unlike the JWT denylist below, which
+  # fails CLOSED): PostgreSQL idempotency/ledger invariants already guarantee
+  # financial correctness regardless of Redis's availability, so an outage of
+  # this optional abuse-prevention layer must not also take down legitimate
+  # traffic.
+  rate-limit:
+    enabled: ${RATE_LIMIT_ENABLED:true}
+    limit: ${RATE_LIMIT_MAX_REQUESTS:20}
+    window: ${RATE_LIMIT_WINDOW:PT1M}
   # M4: transactional outbox -> Kafka. Topic names are config, not code, so
   # OutboxPublisher never needs to know an event type called "TransferCompleted"
   # exists (see TransferEventPublisher, which is the one place that does).
@@ -95,6 +112,12 @@ app:
     payment-processing-topic: ${PAYMENTS_PROCESS_TOPIC:payments.process}
     payment-dlq-topic: ${PAYMENTS_DLQ_TOPIC:payments.dlq}
     publisher-enabled: ${OUTBOX_PUBLISHER_ENABLED:true}
+    # Gates only the @Scheduled poll loop, independent of publisher-enabled
+    # above (which gates bean existence). Kafka integration tests that call
+    # publishDueEvents() directly set this false via @TestPropertySource so
+    # the ambient background tick can't race their own deterministic call
+    # for the same rows.
+    scheduler-enabled: ${OUTBOX_SCHEDULER_ENABLED:true}
     publish-batch-size: ${OUTBOX_PUBLISH_BATCH_SIZE:20}
     poll-interval-ms: ${OUTBOX_POLL_INTERVAL_MS:2000}
     max-attempts: ${OUTBOX_MAX_ATTEMPTS:5}

@@ -1,0 +1,36 @@
+# Test-only overrides, layered on top of src/main/resources/application.yml
+# via the Spring "test" profile (activated for the whole Maven test run by
+# maven-surefire-plugin's spring.profiles.active=test system property — see
+# pom.xml).
+#
+# NOTE: this file is intentionally named application-test.yml, not
+# application.yml. A same-named application.yml in src/test/resources would
+# NOT merge with the main one — Maven Surefire puts target/test-classes
+# ahead of target/classes on the test classpath, and Spring Boot's default
+# classpath:/application.yml resolution returns only the first match it
+# finds for that exact filename, so a same-named test file would completely
+# SHADOW (not overlay) every property that only exists in the main file
+# (spring.datasource.*, spring.data.redis.*, every app.* block, etc.) for
+# any test that boots a real ApplicationContext. Using a distinct,
+# profile-specific filename avoids that trap: Spring Boot loads
+# classpath:/application.yml AND classpath:/application-test.yml as two
+# separate locations and correctly layers the second over the first.
+#
+# By default, NO test in this project should depend on a running Kafka
+# broker just because Kafka is on the classpath — the M0-M3 tests only ever
+# needed PostgreSQL/Redis, and that must stay true. This file turns off the
+# two things that would otherwise reach out to Kafka on every Spring context
+# used by any @SpringBootTest: the scheduled outbox publisher, and
+# @KafkaListener container auto-start.
+#
+# The handful of M4 tests that DO want Kafka re-enable both, explicitly, via
+# @TestPropertySource — see e.g. OutboxPublisherKafkaIntegrationTest — and
+# are separately gated on KAFKA_BOOTSTRAP_SERVERS being set.
+spring:
+  kafka:
+    listener:
+      auto-startup: false
+
+app:
+  outbox:
+    publisher-enabled: false

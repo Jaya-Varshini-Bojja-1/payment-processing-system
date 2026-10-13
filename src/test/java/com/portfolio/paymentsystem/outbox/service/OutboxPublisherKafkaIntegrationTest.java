@@ -39,7 +39,15 @@ import com.portfolio.paymentsystem.outbox.repository.OutboxEventRepository;
  * one test class in M4 that is allowed to depend on Kafka being up.
  */
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.NONE)
-@TestPropertySource(properties = "app.outbox.publisher-enabled=true")
+@TestPropertySource(properties = {
+        "app.outbox.publisher-enabled=true",
+        // Keep the bean (so publishDueEvents() can be called manually
+        // below) but disable its @Scheduled background tick — otherwise
+        // it races this test's own deterministic call for the exact rows
+        // under test (and drains unrelated leftover rows from other test
+        // classes sharing the same real Postgres database).
+        "app.outbox.scheduler-enabled=false"
+})
 @EnabledIfEnvironmentVariable(named = "POSTGRES_USER", matches = ".+")
 @EnabledIfEnvironmentVariable(named = "POSTGRES_PASSWORD", matches = ".+")
 @EnabledIfEnvironmentVariable(named = "JWT_SECRET", matches = ".+")
@@ -95,6 +103,7 @@ class OutboxPublisherKafkaIntegrationTest {
                 UUID.randomUUID(), "Transfer", aggregateId, "TransferCompleted",
                 "transfers.completed", "transfers.dlq", payloadJson));
 
+        deferOtherDueOutboxRows(event.getId());
         outboxPublisher.publishDueEvents();
 
         OutboxEvent reloaded = outboxEventRepository.findById(event.getId()).orElseThrow();
@@ -131,6 +140,7 @@ class OutboxPublisherKafkaIntegrationTest {
                         'PUBLISHING', 0, ?, ?)
                 """, eventId, aggregateId, payloadJson, java.sql.Timestamp.from(longAgo), java.sql.Timestamp.from(longAgo));
 
+        deferOtherDueOutboxRows(eventId);
         outboxPublisher.publishDueEvents();
 
         OutboxEvent reloaded = outboxEventRepository.findById(eventId).orElseThrow();
@@ -138,6 +148,25 @@ class OutboxPublisherKafkaIntegrationTest {
 
         ConsumerRecord<String, String> received = pollForRecordWithKey(aggregateId.toString());
         assertThat(received.value()).isEqualTo(payloadJson);
+    }
+
+    /**
+     * Other @SpringBootTest classes share this host Postgres and leave
+     * PENDING / stale-PUBLISHING rows behind (they run with the publisher
+     * bean off). {@code publishDueEvents()} claims {@code LIMIT 20} oldest
+     * due rows, so a backlog of 20+ would starve the row this test just
+     * inserted. Push everyone else an hour into the future so this tick
+     * can only see the row under test.
+     */
+    private void deferOtherDueOutboxRows(UUID eventId) {
+        jdbcTemplate.update("""
+                UPDATE outbox_events
+                   SET next_attempt_at = ?
+                 WHERE id <> ?
+                   AND status IN ('PENDING', 'PUBLISHING')
+                """,
+                java.sql.Timestamp.from(Instant.now().plus(Duration.ofHours(1))),
+                eventId);
     }
 
     private ConsumerRecord<String, String> pollForRecordWithKey(String key) {

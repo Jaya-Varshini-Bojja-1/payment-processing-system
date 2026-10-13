@@ -34,6 +34,17 @@ public class OutboxProperties {
      */
     private boolean publisherEnabled = true;
 
+    /**
+     * Gates only the {@code @Scheduled} poll loop itself, independent of
+     * {@link #publisherEnabled} (which gates whether the bean exists at
+     * all). A test that wants to call {@code publishDueEvents()} directly
+     * and deterministically — without an ambient background tick racing
+     * its own call for the same rows — sets this {@code false} while
+     * leaving {@link #publisherEnabled} {@code true} so the bean is still
+     * there to autowire.
+     */
+    private boolean schedulerEnabled = true;
+
     /** How many due rows one publisher tick claims and sends. */
     private int publishBatchSize = 20;
 
@@ -107,6 +118,14 @@ public class OutboxProperties {
 
     public void setPublisherEnabled(boolean publisherEnabled) {
         this.publisherEnabled = publisherEnabled;
+    }
+
+    public boolean isSchedulerEnabled() {
+        return schedulerEnabled;
+    }
+
+    public void setSchedulerEnabled(boolean schedulerEnabled) {
+        this.schedulerEnabled = schedulerEnabled;
     }
 
     public int getPublishBatchSize() {

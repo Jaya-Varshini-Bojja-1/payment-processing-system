@@ -18,6 +18,8 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 import com.portfolio.paymentsystem.common.dto.PageResponse;
+import com.portfolio.paymentsystem.common.ratelimit.RateLimitScope;
+import com.portfolio.paymentsystem.common.ratelimit.RateLimited;
 import com.portfolio.paymentsystem.identity.security.AuthenticatedUser;
 import com.portfolio.paymentsystem.payment.domain.PaymentStatus;
 import com.portfolio.paymentsystem.payment.domain.PaymentType;
@@ -58,6 +60,8 @@ public class PaymentController {
     @ApiResponse(responseCode = "404", description = "Caller has no account")
     @ApiResponse(responseCode = "409", description = "Concurrent duplicate request in flight")
     @ApiResponse(responseCode = "422", description = "Idempotency-Key reused with a different request body")
+    @ApiResponse(responseCode = "429", description = "Rate limit exceeded for deposit creation; retry after the given Retry-After seconds")
+    @RateLimited(RateLimitScope.PAYMENT_DEPOSIT)
     public ResponseEntity<PaymentResponse> createDeposit(
             @AuthenticationPrincipal AuthenticatedUser principal,
             @Parameter(description = "Client-generated unique key for this payment request", required = true)
@@ -78,6 +82,8 @@ public class PaymentController {
     @ApiResponse(responseCode = "404", description = "Caller has no account")
     @ApiResponse(responseCode = "409", description = "Concurrent duplicate request in flight")
     @ApiResponse(responseCode = "422", description = "Idempotency-Key reused with a different request body")
+    @ApiResponse(responseCode = "429", description = "Rate limit exceeded for withdrawal creation; retry after the given Retry-After seconds")
+    @RateLimited(RateLimitScope.PAYMENT_WITHDRAWAL)
     public ResponseEntity<PaymentResponse> createWithdrawal(
             @AuthenticationPrincipal AuthenticatedUser principal,
             @Parameter(description = "Client-generated unique key for this payment request", required = true)
